@@ -1,4 +1,4 @@
-import requests, html5lib, json, time
+import requests, html5lib, json, time, copy
 from time import sleep
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
@@ -6,6 +6,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 
+# for each spec group parse the important info
+## Vehicle Spec Parser Class here
 class VehicleSpecParser:
     def __init__(self, make, model, year, url, debugger):
         self.make = make.lower()
@@ -16,6 +18,8 @@ class VehicleSpecParser:
         self.__setupDriver()
         self.__clickSpecsButton()
         self.__getVehicleFeatureCategories()
+        self.__createRowTemplate()
+        self.__createSeriesLists()
     
     def cleanup(self):
         self.driver.quit()
@@ -25,7 +29,17 @@ class VehicleSpecParser:
         self.driver.implicitly_wait(5)
         self.driver.get(self.url)
         sleep(2)
-        
+    
+    def __createRowTemplate(self):
+        self.__rowTemplate = {}
+        for s in self.series:
+            self.__rowTemplate[s] = {}
+    
+    def __createSeriesLists(self):
+        self.__seriesLists = {}
+        for s in self.series:
+            self.__seriesLists[s] = []
+            
     def __clickSpecsButton(self):
         specsButton = self.driver.find_element_by_xpath("//*[text()='Specs']")
         specsButton.click()
@@ -51,12 +65,14 @@ class VehicleSpecParser:
             self.__ignoreEmptys, featuresElement.find_elements_by_css_selector("div[class='tcom-accordion']"))]
         sleep(3)
 
-    def findAndClickMore(self, featureElement):
-        moreButtons = [button for button in 
-                       featureElement.find_elements_by_css_selector("a") if button.text.lower() == "more"]
-        for button in moreButtons:
-            button.click()
-        sleep(3)
+    def __findAndClickMore(self, row):
+        # class="view-more"
+        try:
+            moreButton = row.find_element_by_css_selector("button[class='view-more']")
+            if moreButton:
+                morebutton.click()
+        except Exception as e:
+            self.debugger.addErrors(e)
 
     def __getFeatureElement(self, feature):
         try:
@@ -80,45 +96,71 @@ class VehicleSpecParser:
             return valueDriver.text
         return valueDriver.find_element_by_css_selector("i").get_attribute('aria-label')
 
-    def __getRowData(self, categoryContainer):
+
+    
+    def __expandDescription(self, container):
+        desc = container.find_element_by_css_selector("td[class='category-title']")
+        self.__findAndClickMore(desc)
+        return desc.text
+    
+    def __getGroupingDescription(self, featureGroup):
+        try:
+            groupingDescription = featureGroup.find_element_by_css_selector("td[class='category-title sub-header']").text
+            if groupingDescription == "":
+                return None
+            return groupingDescription
+        except:
+            return None
+    
+    def __getDescription(self, categoryRow):
+        return self.__expandDescription(categoryRow)
+        
+
+    def __getRowData(self, featureRow):
         rowData = {}
-        values = categoryContainer.find_elements_by_css_selector("td[class='category-value']")
+        values = featureRow.find_elements_by_css_selector("td[class='category-value']")
         for i, s in enumerate(self.series):
             rowData[s] = self.__getValue(values[i])
         return rowData
+        
+    def __getRows(self, featureRows, featureGroup):
+        groupingDescription = self.__getGroupingDescription(featureGroup)
+        seriesLists = copy.deepcopy(self.__seriesLists)
+        
+        for featureRow in featureRows:
+            description = self.__getDescription(featureRow)
+            data = self.__getRowData(featureRow)
+            
+            for series in data:
+                seriesData = { "description": description, "subgroup": groupingDescription,"value": data[series] }
+                seriesLists[series].append(seriesData)
+        return seriesLists
+        
 
-    def __getSubtitleIfExists(self, category):
-        try:
-            subtitle = category.find_element_by_css_selector("td[class='category-title sub-header']").text
-            return subtitle
-        except:
-            return None
-
-    def __getCategoryData(self, featureElement):
-        categoryData = {}
-        for s in self.series:
-            categoryData[s] = {}
-        categories = featureElement.find_elements_by_css_selector("table[class='feature-group']")
-        for c in categories:
-            if c.text == '':
-                self.debugger.logWeirdElement(c, self.url, self.model, self.make, "__getCategoryData: empty text")
+    def __getFeatureData(self, featureElement):
+        featureData = copy.deepcopy(self.__seriesLists)
+        
+        # a featureGroup is a table of related data within a feature
+        # there can be multiple featureGroups, generally marked with a groupingDescription
+        featureGroups = featureElement.find_elements_by_css_selector("table[class='feature-group']")
+        for featureGroup in featureGroups:
+            if featureGroup.text == '':
+                self.debugger.logWeirdElement(featureGroup, self.url, self.model, self.make, "__getFeatureData: empty text")
                 continue
             try:
-                categoryContainer = c.find_element_by_css_selector("tr[class='category-container']")
+                # featureRows is a row that has a title, and a column of data for each series
+                featureRows = featureGroup.find_elements_by_css_selector("tr[class='category-container']")
+                data = self.__getRows(featureRows, featureGroup)
+                for series in data:
+                    featureData[series].extend(data[series])
+                 
+                
             except Exception as e:
-                self.debugger.logWeirdElement(c, self.url, self.model, self.make, "__getCategoryData: bad element access")
+                self.debugger.logWeirdElement(featureGroup, self.url, self.model, self.make, "__getFeatureData: bad element access")
                 self.debugger.addErrors(
-                    {"error": repr(e), "make": self.make, "model": self.model,  "url": self.url, "origin": "__getCategoryData: bad element access"})
+                    {"error": repr(e), "make": self.make, "model": self.model,  "url": self.url, "origin": "__getFeatureData: bad element access"})
                 continue
-            title = categoryContainer.find_element_by_css_selector("td[class='category-title']").text
-            subtitle = self.__getSubtitleIfExists(c)
-            rowData = self.__getRowData(categoryContainer)
-            for seriesColumn in rowData:
-                categoryData[seriesColumn]["title"] = title
-                categoryData[seriesColumn]["value"] = rowData[seriesColumn]
-                if subtitle is not None:
-                    categoryData[seriesColumn]["subtitle"] = subtitle
-        return categoryData
+        return featureData
     
     def parseSpecs(self):
         '''
@@ -133,8 +175,8 @@ class VehicleSpecParser:
             "Make": self.make,
             "Year": self.year,
             "URL": self.url,
-            "trimAndSeries": self.trimAndSeries, 
-            "featuresList": self.features,
+            "TrimAndSeries": self.trimAndSeries, 
+            "FeaturesList": self.features,
             "Features": {}
         }
         startTime = time.time()
@@ -144,7 +186,7 @@ class VehicleSpecParser:
             # Find the element containing the specific feature 
             featureElement = self.__getFeatureElement(feature)
             self.__revealFeatureElement(featureElement)
-            self.findAndClickMore(featureElement) # NOTE: need to click not in bulk
-            self.specs["Features"][feature] = self.__getCategoryData(featureElement)
+            self.specs["Features"][feature] = self.__getFeatureData(featureElement)
+            # print(self.specs["Features"][feature])
         print(f"{self.model}:\t Parsing Completed in {(time.time() - startTime)/60} minutes")
         return self.specs
