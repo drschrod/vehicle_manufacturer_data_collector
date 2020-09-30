@@ -88,8 +88,13 @@ class VehicleSpecParser:
             return self.driver
 
     def __revealFeatureElement(self, featureElement):
-        featureButton = featureElement.find_element_by_css_selector("button")
-        featureButton.click()
+        try:
+            featureButton = featureElement.find_element_by_css_selector("button")
+            featureButton.click()
+        except Exception as e:
+            self.debugger.addErrors({"error": repr(e), "make": self.make, "model": self.model,  "url": self.url, "origin": "__getFeatureElement"})
+        
+    
     
     def __getValue(self, valueDriver):
         if valueDriver.text != '':
